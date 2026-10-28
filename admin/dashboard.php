@@ -1,1253 +1,765 @@
-<?php
 
-require_once "../includes/admin_header.php";
+<?php
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
 require_once "../config/database.php";
 
-/*
-|--------------------------------------------------------------------------
-| Helper Function
-|--------------------------------------------------------------------------
-*/
+// Authenticate admin before sending any HTML
+if (
+    !isset($_SESSION["user_id"]) ||
+    !isset($_SESSION["user_role"]) ||
+    $_SESSION["user_role"] !== "admin"
+) {
+    header("Location: ../auth/login.php");
+    exit();
+}
 
+// Helper for dashboard counts
 function getCount($conn, $query)
 {
     $result = $conn->query($query);
 
     if ($result && $row = $result->fetch_assoc()) {
-        return (int)$row['total'];
+        return (int) $row["total"];
     }
 
     return 0;
 }
 
-
-/*
-|--------------------------------------------------------------------------
-| Dashboard Statistics
-|--------------------------------------------------------------------------
-*/
-
-/* Customers */
+// Dashboard statistics
 $total_customers = getCount(
     $conn,
-    "SELECT COUNT(*) AS total
-     FROM users
-     WHERE role = 'customer'"
+    "SELECT COUNT(*) AS total FROM users WHERE role = 'customer'"
 );
 
-
-/* Destinations */
 $total_destinations = getCount(
     $conn,
-    "SELECT COUNT(*) AS total
-     FROM destinations"
+    "SELECT COUNT(*) AS total FROM destinations"
 );
-
-
-/*
-|--------------------------------------------------------------------------
-| Packages
-|--------------------------------------------------------------------------
-|
-| Your admin folder is called packages.
-| We use the packages table here.
-|
-*/
 
 $total_packages = getCount(
     $conn,
-    "SELECT COUNT(*) AS total
-     FROM packages"
+    "SELECT COUNT(*) AS total FROM tour_packages"
 );
 
-
-/* Total Bookings */
 $total_bookings = getCount(
     $conn,
-    "SELECT COUNT(*) AS total
-     FROM bookings"
+    "SELECT COUNT(*) AS total FROM bookings"
 );
 
-
-/* Confirmed Bookings */
 $confirmed_bookings = getCount(
     $conn,
-    "SELECT COUNT(*) AS total
-     FROM bookings
-     WHERE status = 'confirmed'"
+    "SELECT COUNT(*) AS total FROM bookings WHERE status = 'confirmed'"
 );
 
-
-/* Pending Bookings */
 $pending_bookings = getCount(
     $conn,
-    "SELECT COUNT(*) AS total
-     FROM bookings
-     WHERE status = 'pending'"
+    "SELECT COUNT(*) AS total FROM bookings WHERE status = 'pending'"
 );
 
+$cancelled_bookings = getCount(
+    $conn,
+    "SELECT COUNT(*) AS total FROM bookings WHERE status = 'cancelled'"
+);
 
-/*
-|--------------------------------------------------------------------------
-| Revenue
-|--------------------------------------------------------------------------
-*/
-
+// Revenue from completed payments
 $total_revenue = 0;
 
-$revenue_query = $conn->query("
+$revenue_result = $conn->query("
     SELECT COALESCE(SUM(amount), 0) AS total
     FROM payments
     WHERE payment_status = 'paid'
 ");
 
-if ($revenue_query) {
-
-    $revenue_row = $revenue_query->fetch_assoc();
-
-    $total_revenue = $revenue_row['total'] ?? 0;
+if ($revenue_result) {
+    $revenue_row = $revenue_result->fetch_assoc();
+    $total_revenue = (float) ($revenue_row["total"] ?? 0);
 }
 
-
-/*
-|--------------------------------------------------------------------------
-| Recent Bookings
-|--------------------------------------------------------------------------
-*/
-
+// Recent bookings with customer and package information
 $recent_bookings = $conn->query("
-    SELECT *
-    FROM bookings
-    ORDER BY id DESC
+    SELECT
+        b.id,
+        b.user_id,
+        b.package_id,
+        b.travel_date,
+        b.status,
+        b.total_amount,
+        b.created_at,
+        u.name AS customer_name,
+        tp.package_name
+    FROM bookings b
+    LEFT JOIN users u ON b.user_id = u.id
+    LEFT JOIN tour_packages tp ON b.package_id = tp.id
+    ORDER BY b.id DESC
     LIMIT 8
 ");
 
-
-/*
-|--------------------------------------------------------------------------
-| Booking Status
-|--------------------------------------------------------------------------
-*/
-
-$status_counts = [
-
-    'confirmed' => 0,
-    'pending'   => 0,
-    'cancelled' => 0
-
-];
-
-
-$status_query = $conn->query("
-    SELECT status, COUNT(*) AS total
-    FROM bookings
-    GROUP BY status
-");
-
-
-if ($status_query) {
-
-    while ($row = $status_query->fetch_assoc()) {
-
-        $status = strtolower(trim($row['status']));
-
-        if (isset($status_counts[$status])) {
-
-            $status_counts[$status] = (int)$row['total'];
-
-        }
-
-    }
-
-}
-
+// Load shared admin layout only after authentication and queries
+require_once "../includes/admin_header.php";
 ?>
 
-
 <style>
-
-/* =========================================================
-   Dashboard Header
-   ========================================================= */
-
-.dashboard-header {
-
-    display: flex;
-
-    justify-content: space-between;
-
-    align-items: center;
-
-    margin-bottom: 25px;
+.dashboard-page {
+    color: #172033;
+    max-width: 1500px;
+    margin: 0 auto;
 }
 
+.dashboard-heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 18px;
+    margin-bottom: 26px;
+}
 
-.dashboard-title h1 {
-
-    margin: 0 0 6px;
-
-    font-size: 26px;
-
+.dashboard-heading h1 {
+    font-size: 28px;
+    margin: 0 0 7px;
     color: #111827;
 }
 
-
-.dashboard-title p {
-
+.dashboard-heading p {
+    color: #64748b;
+    font-size: 14px;
     margin: 0;
-
-    font-size: 13px;
-
-    color: #6b7280;
 }
 
-
-/* =========================================================
-   Quick Actions
-   ========================================================= */
-
 .quick-actions {
-
     display: flex;
-
     gap: 10px;
-
     flex-wrap: wrap;
 }
 
-
-.quick-actions a {
-
+.action-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 11px 16px;
+    border-radius: 8px;
     text-decoration: none;
-}
-
-
-/* =========================================================
-   Statistics
-   ========================================================= */
-
-.stats-grid {
-
-    display: grid;
-
-    grid-template-columns: repeat(4, 1fr);
-
-    gap: 18px;
-
-    margin-bottom: 20px;
-}
-
-
-.stat-card {
-
-    background: #ffffff;
-
-    border: 1px solid #e5e7eb;
-
-    border-radius: 10px;
-
-    padding: 20px;
-
+    font-size: 13px;
+    font-weight: 600;
     transition: 0.2s;
 }
 
+.action-primary {
+    background: #2563eb;
+    color: white;
+}
+
+.action-primary:hover {
+    background: #1d4ed8;
+}
+
+.action-secondary {
+    background: white;
+    color: #334155;
+    border: 1px solid #dbe2ea;
+}
+
+.action-secondary:hover {
+    background: #f8fafc;
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 18px;
+    margin-bottom: 22px;
+}
+
+.stat-card {
+    background: white;
+    border: 1px solid #e7ebf2;
+    border-radius: 14px;
+    padding: 22px;
+    box-shadow: 0 3px 12px rgba(15, 23, 42, 0.025);
+    transition: transform 0.2s, box-shadow 0.2s;
+}
 
 .stat-card:hover {
-
-    transform: translateY(-2px);
-
-    box-shadow: 0 5px 18px rgba(0,0,0,0.06);
+    transform: translateY(-3px);
+    box-shadow: 0 10px 25px rgba(15, 23, 42, 0.07);
 }
-
 
 .stat-top {
-
     display: flex;
-
+    align-items: center;
     justify-content: space-between;
-
-    align-items: center;
-
-    margin-bottom: 15px;
+    gap: 10px;
+    margin-bottom: 20px;
 }
-
-
-.stat-icon {
-
-    width: 42px;
-
-    height: 42px;
-
-    border-radius: 9px;
-
-    background: #eff6ff;
-
-    display: flex;
-
-    align-items: center;
-
-    justify-content: center;
-
-    font-size: 18px;
-}
-
 
 .stat-label {
-
-    color: #6b7280;
-
-    font-size: 12px;
-
-    margin-bottom: 5px;
+    font-size: 13px;
+    color: #64748b;
+    font-weight: 500;
 }
 
+.stat-icon {
+    width: 46px;
+    height: 46px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 21px;
+}
+
+.icon-blue { background: #eff6ff; }
+.icon-purple { background: #f3e8ff; }
+.icon-orange { background: #fff7ed; }
+.icon-green { background: #ecfdf5; }
 
 .stat-value {
-
+    font-size: 29px;
+    line-height: 1.2;
+    font-weight: 750;
     color: #111827;
-
-    font-size: 27px;
-
-    font-weight: bold;
+    overflow-wrap: anywhere;
 }
 
+.stat-foot {
+    font-size: 12px;
+    color: #94a3b8;
+    margin-top: 8px;
+}
 
-/* =========================================================
-   Secondary Cards
-   ========================================================= */
-
-.secondary-grid {
-
+.summary-grid {
     display: grid;
-
-    grid-template-columns: repeat(3, 1fr);
-
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 18px;
-
-    margin-bottom: 25px;
+    margin-bottom: 24px;
 }
 
-
-.secondary-card {
-
-    background: white;
-
-    border: 1px solid #e5e7eb;
-
-    border-radius: 10px;
-
-    padding: 18px 20px;
-
+.summary-card {
     display: flex;
-
-    justify-content: space-between;
-
     align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 20px;
+    background: white;
+    border: 1px solid #e7ebf2;
+    border-radius: 12px;
 }
 
-
-.secondary-label {
-
-    font-size: 12px;
-
-    color: #6b7280;
-
-    margin-bottom: 5px;
+.summary-label {
+    color: #64748b;
+    font-size: 13px;
+    margin-bottom: 7px;
 }
 
-
-.secondary-value {
-
-    font-size: 21px;
-
-    font-weight: bold;
-
+.summary-value {
     color: #111827;
+    font-size: 23px;
+    font-weight: 750;
 }
 
-
-.secondary-icon {
-
-    font-size: 20px;
+.summary-icon {
+    font-size: 23px;
 }
 
-
-/* =========================================================
-   Main Dashboard Grid
-   ========================================================= */
-
-.dashboard-grid {
-
+.dashboard-content {
     display: grid;
-
-    grid-template-columns: 2fr 1fr;
-
-    gap: 20px;
+    grid-template-columns: minmax(0, 1.8fr) minmax(260px, 0.8fr);
+    gap: 22px;
+    align-items: start;
 }
 
-
-/* =========================================================
-   Dashboard Cards
-   ========================================================= */
-
-.dashboard-card {
-
+.panel {
     background: white;
-
-    border: 1px solid #e5e7eb;
-
-    border-radius: 10px;
-
+    border: 1px solid #e7ebf2;
+    border-radius: 14px;
     overflow: hidden;
+    min-width: 0;
 }
 
-
-.dashboard-card-header {
-
+.panel-header {
+    padding: 20px 22px;
     display: flex;
-
     justify-content: space-between;
-
     align-items: center;
-
-    padding: 18px 20px;
-
-    border-bottom: 1px solid #e5e7eb;
+    gap: 12px;
+    border-bottom: 1px solid #edf0f5;
 }
 
-
-.dashboard-card-header h2 {
-
+.panel-header h2 {
     margin: 0;
-
-    font-size: 16px;
-
     color: #111827;
+    font-size: 17px;
 }
 
-
-.dashboard-card-header a {
-
+.panel-header p {
+    margin: 5px 0 0;
+    color: #94a3b8;
     font-size: 12px;
-
-    color: #2563eb;
-
-    text-decoration: none;
 }
 
+.view-all {
+    color: #2563eb;
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 12px;
+    white-space: nowrap;
+}
 
-/* =========================================================
-   Booking Table
-   ========================================================= */
+.view-all:hover {
+    text-decoration: underline;
+}
 
-.table-wrapper {
-
+.table-scroll {
     overflow-x: auto;
 }
 
-
-.dashboard-table {
-
+.booking-table {
     width: 100%;
-
     border-collapse: collapse;
+    white-space: nowrap;
 }
 
-
-.dashboard-table th {
-
-    background: #f9fafb;
-
-    color: #6b7280;
-
-    font-size: 11px;
-
-    font-weight: 600;
-
+.booking-table th {
+    background: #f8fafc;
+    color: #64748b;
     text-align: left;
-
-    padding: 13px 18px;
-
-    border-bottom: 1px solid #e5e7eb;
+    padding: 13px 16px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.35px;
 }
 
-
-.dashboard-table td {
-
-    padding: 14px 18px;
-
+.booking-table td {
+    padding: 15px 16px;
     font-size: 12px;
-
-    color: #374151;
-
-    border-bottom: 1px solid #f0f0f0;
+    color: #475569;
+    border-bottom: 1px solid #f1f5f9;
 }
 
-
-.dashboard-table tr:last-child td {
-
+.booking-table tr:last-child td {
     border-bottom: none;
 }
 
-
-.booking-id {
-
-    font-weight: bold;
-
-    color: #2563eb;
+.booking-table tbody tr:hover {
+    background: #fafcff;
 }
 
+.booking-number {
+    color: #2563eb;
+    font-weight: 700;
+}
 
-/* =========================================================
-   Status
-   ========================================================= */
+.customer-name {
+    color: #1e293b;
+    font-weight: 600;
+}
 
-.status {
-
+.status-badge {
     display: inline-block;
-
     padding: 5px 9px;
-
     border-radius: 20px;
-
     font-size: 10px;
-
-    font-weight: bold;
-
+    font-weight: 700;
     text-transform: capitalize;
 }
 
-
 .status-confirmed {
-
-    background: #dcfce7;
-
     color: #166534;
+    background: #dcfce7;
 }
-
 
 .status-pending {
-
-    background: #fef3c7;
-
     color: #92400e;
+    background: #fef3c7;
 }
-
 
 .status-cancelled {
-
-    background: #fee2e2;
-
     color: #991b1b;
+    background: #fee2e2;
 }
 
-
-/* =========================================================
-   Booking Summary
-   ========================================================= */
-
-.summary-content {
-
-    padding: 15px 20px;
+.status-other {
+    color: #475569;
+    background: #f1f5f9;
 }
 
+.empty-state {
+    padding: 38px 20px;
+    text-align: center;
+    color: #64748b;
+    font-size: 13px;
+}
 
-.summary-item {
+.summary-list {
+    padding: 8px 22px 18px;
+}
 
+.summary-row {
     display: flex;
-
     justify-content: space-between;
-
     align-items: center;
-
-    padding: 15px 0;
-
-    border-bottom: 1px solid #f0f0f0;
+    gap: 12px;
+    padding: 17px 0;
+    border-bottom: 1px solid #f1f5f9;
 }
 
-
-.summary-item:last-child {
-
+.summary-row:last-child {
     border-bottom: none;
 }
 
-
-.summary-left {
-
+.summary-name {
     display: flex;
-
     align-items: center;
-
     gap: 10px;
+    color: #475569;
+    font-size: 13px;
 }
-
 
 .summary-dot {
-
     width: 9px;
-
     height: 9px;
-
     border-radius: 50%;
-
-    background: #2563eb;
+    flex-shrink: 0;
 }
 
+.dot-green { background: #22c55e; }
+.dot-orange { background: #f59e0b; }
+.dot-red { background: #ef4444; }
+.dot-blue { background: #3b82f6; }
 
-.summary-label {
-
-    font-size: 13px;
-
-    color: #4b5563;
-}
-
-
-.summary-number {
-
+.summary-count {
     font-size: 14px;
-
-    font-weight: bold;
-
-    color: #111827;
+    font-weight: 750;
+    color: #172033;
 }
 
-
-/* =========================================================
-   Empty Message
-   ========================================================= */
-
-.empty-message {
-
-    padding: 35px;
-
-    text-align: center;
-
-    color: #6b7280;
-
-    font-size: 13px;
+.revenue-panel {
+    padding: 20px 22px;
+    background: linear-gradient(135deg, #eff6ff, #f8faff);
+    border-top: 1px solid #e7ebf2;
 }
 
+.revenue-panel span {
+    display: block;
+    color: #64748b;
+    font-size: 12px;
+    margin-bottom: 8px;
+}
 
-/* =========================================================
-   Responsive
-   ========================================================= */
+.revenue-panel strong {
+    font-size: 24px;
+    color: #1d4ed8;
+    overflow-wrap: anywhere;
+}
 
 @media (max-width: 1100px) {
+    .stats-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .dashboard-content {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 650px) {
+    .dashboard-heading h1 {
+        font-size: 24px;
+    }
+
+    .summary-grid {
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
 
     .stats-grid {
-
-        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
     }
 
-    .dashboard-grid {
-
-        grid-template-columns: 1fr;
+    .stat-card {
+        padding: 16px;
     }
 
+    .stat-value {
+        font-size: 24px;
+    }
+
+    .stat-icon {
+        width: 39px;
+        height: 39px;
+        font-size: 18px;
+    }
+
+    .panel-header {
+        padding: 17px;
+    }
+
+    .summary-list {
+        padding-left: 17px;
+        padding-right: 17px;
+    }
 }
 
-
-@media (max-width: 700px) {
-
-    .dashboard-header {
-
-        flex-direction: column;
-
-        align-items: flex-start;
-
-        gap: 15px;
-    }
-
-    .secondary-grid {
-
-        grid-template-columns: 1fr;
-    }
-
-}
-
-
-@media (max-width: 500px) {
-
+@media (max-width: 420px) {
     .stats-grid {
-
         grid-template-columns: 1fr;
     }
 
-}
+    .quick-actions {
+        width: 100%;
+    }
 
+    .action-button {
+        flex: 1;
+    }
+}
 </style>
 
+<div class="dashboard-page">
 
-<!-- =========================================================
-     Dashboard Heading
-     ========================================================= -->
-
-<div class="dashboard-header">
-
-    <div class="dashboard-title">
-
-        <h1>
-            Dashboard
-        </h1>
-
-        <p>
-            Welcome to your Tour & Travel Management System.
-        </p>
-
-    </div>
-
-
-    <div class="quick-actions">
-
-        <a
-            href="destinations/add.php"
-            class="btn btn-primary"
-        >
-            + Add Destination
-        </a>
-
-
-        <a
-            href="packages/index.php"
-            class="btn btn-secondary"
-        >
-            Tour Packages
-        </a>
-
-    </div>
-
-</div>
-
-
-<!-- =========================================================
-     Main Statistics
-     ========================================================= -->
-
-<div class="stats-grid">
-
-
-    <!-- Customers -->
-
-    <div class="stat-card">
-
-        <div class="stat-top">
-
-            <div>
-
-                <div class="stat-label">
-                    Total Customers
-                </div>
-
-                <div class="stat-value">
-                    <?php echo number_format($total_customers); ?>
-                </div>
-
-            </div>
-
-            <div class="stat-icon">
-                👥
-            </div>
-
-        </div>
-
-    </div>
-
-
-    <!-- Destinations -->
-
-    <div class="stat-card">
-
-        <div class="stat-top">
-
-            <div>
-
-                <div class="stat-label">
-                    Destinations
-                </div>
-
-                <div class="stat-value">
-                    <?php echo number_format($total_destinations); ?>
-                </div>
-
-            </div>
-
-            <div class="stat-icon">
-                📍
-            </div>
-
-        </div>
-
-    </div>
-
-
-    <!-- Packages -->
-
-    <div class="stat-card">
-
-        <div class="stat-top">
-
-            <div>
-
-                <div class="stat-label">
-                    Tour Packages
-                </div>
-
-                <div class="stat-value">
-                    <?php echo number_format($total_packages); ?>
-                </div>
-
-            </div>
-
-            <div class="stat-icon">
-                🧳
-            </div>
-
-        </div>
-
-    </div>
-
-
-    <!-- Bookings -->
-
-    <div class="stat-card">
-
-        <div class="stat-top">
-
-            <div>
-
-                <div class="stat-label">
-                    Total Bookings
-                </div>
-
-                <div class="stat-value">
-                    <?php echo number_format($total_bookings); ?>
-                </div>
-
-            </div>
-
-            <div class="stat-icon">
-                📅
-            </div>
-
-        </div>
-
-    </div>
-
-</div>
-
-
-<!-- =========================================================
-     Secondary Statistics
-     ========================================================= -->
-
-<div class="secondary-grid">
-
-
-    <div class="secondary-card">
-
+    <div class="dashboard-heading">
         <div>
-
-            <div class="secondary-label">
-                Confirmed Bookings
-            </div>
-
-            <div class="secondary-value">
-                <?php echo number_format($confirmed_bookings); ?>
-            </div>
-
+            <h1>Admin Dashboard</h1>
+            <p>Monitor customers, destinations, tour packages and bookings.</p>
         </div>
 
-        <div class="secondary-icon">
-            ✓
-        </div>
-
-    </div>
-
-
-    <div class="secondary-card">
-
-        <div>
-
-            <div class="secondary-label">
-                Pending Bookings
-            </div>
-
-            <div class="secondary-value">
-                <?php echo number_format($pending_bookings); ?>
-            </div>
-
-        </div>
-
-        <div class="secondary-icon">
-            ⏳
-        </div>
-
-    </div>
-
-
-    <div class="secondary-card">
-
-        <div>
-
-            <div class="secondary-label">
-                Total Revenue
-            </div>
-
-            <div class="secondary-value">
-
-                ₹<?php echo number_format(
-                    $total_revenue,
-                    2
-                ); ?>
-
-            </div>
-
-        </div>
-
-        <div class="secondary-icon">
-            ₹
-        </div>
-
-    </div>
-
-</div>
-
-
-<!-- =========================================================
-     Recent Bookings + Booking Summary
-     ========================================================= -->
-
-<div class="dashboard-grid">
-
-
-    <!-- Recent Bookings -->
-
-    <div class="dashboard-card">
-
-        <div class="dashboard-card-header">
-
-            <h2>
-                Recent Bookings
-            </h2>
-
-            <a href="bookings/index.php">
-                View All →
+        <div class="quick-actions">
+            <a class="action-button action-primary"
+               href="destinations/add.php">
+                + Add Destination
             </a>
 
+            <a class="action-button action-secondary"
+               href="packages/index.php">
+                Manage Packages
+            </a>
+        </div>
+    </div>
+
+    <div class="stats-grid">
+
+        <div class="stat-card">
+            <div class="stat-top">
+                <span class="stat-label">Total Customers</span>
+                <span class="stat-icon icon-blue">👥</span>
+            </div>
+            <div class="stat-value">
+                <?= number_format($total_customers) ?>
+            </div>
+            <div class="stat-foot">Registered customer accounts</div>
         </div>
 
-
-        <div class="table-wrapper">
-
-            <?php if (
-                $recent_bookings &&
-                $recent_bookings->num_rows > 0
-            ): ?>
-
-                <table class="dashboard-table">
-
-                    <thead>
-
-                        <tr>
-
-                            <th>
-                                Booking ID
-                            </th>
-
-                            <th>
-                                Customer
-                            </th>
-
-                            <th>
-                                Package
-                            </th>
-
-                            <th>
-                                Date
-                            </th>
-
-                            <th>
-                                Status
-                            </th>
-
-                        </tr>
-
-                    </thead>
-
-
-                    <tbody>
-
-                    <?php while (
-                        $booking =
-                        $recent_bookings->fetch_assoc()
-                    ): ?>
-
-                        <tr>
-
-                            <td>
-
-                                <span class="booking-id">
-
-                                    #<?php
-                                    echo htmlspecialchars(
-                                        $booking['id']
-                                    );
-                                    ?>
-
-                                </span>
-
-                            </td>
-
-
-                            <td>
-
-                                <?php
-
-                                echo htmlspecialchars(
-
-                                    $booking['customer_name']
-                                    ??
-                                    $booking['user_id']
-                                    ??
-                                    'Customer'
-
-                                );
-
-                                ?>
-
-                            </td>
-
-
-                            <td>
-
-                                <?php
-
-                                echo htmlspecialchars(
-
-                                    $booking['package_name']
-                                    ??
-                                    $booking['package_id']
-                                    ??
-                                    'Tour Package'
-
-                                );
-
-                                ?>
-
-                            </td>
-
-
-                            <td>
-
-                                <?php
-
-                                $date =
-                                    $booking['travel_date']
-                                    ??
-                                    $booking['booking_date']
-                                    ??
-                                    $booking['created_at']
-                                    ??
-                                    null;
-
-
-                                if ($date) {
-
-                                    echo date(
-                                        "d M Y",
-                                        strtotime($date)
-                                    );
-
-                                } else {
-
-                                    echo "-";
-
-                                }
-
-                                ?>
-
-                            </td>
-
-
-                            <td>
-
-                                <?php
-
-                                $status =
-                                    strtolower(
-                                        trim(
-                                            $booking['status']
-                                            ?? 'pending'
-                                        )
-                                    );
-
-                                ?>
-
-                                <span
-                                    class="status status-<?php
-                                    echo htmlspecialchars($status);
-                                    ?>"
-                                >
-
-                                    <?php
-                                    echo htmlspecialchars(
-                                        ucfirst($status)
-                                    );
-                                    ?>
-
-                                </span>
-
-                            </td>
-
-                        </tr>
-
-                    <?php endwhile; ?>
-
-                    </tbody>
-
-                </table>
-
-
-            <?php else: ?>
-
-                <div class="empty-message">
-
-                    No bookings available.
-
-                </div>
-
-            <?php endif; ?>
-
+        <div class="stat-card">
+            <div class="stat-top">
+                <span class="stat-label">Destinations</span>
+                <span class="stat-icon icon-purple">📍</span>
+            </div>
+            <div class="stat-value">
+                <?= number_format($total_destinations) ?>
+            </div>
+            <div class="stat-foot">Destinations in the system</div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-top">
+                <span class="stat-label">Tour Packages</span>
+                <span class="stat-icon icon-orange">🧳</span>
+            </div>
+            <div class="stat-value">
+                <?= number_format($total_packages) ?>
+            </div>
+            <div class="stat-foot">Available package records</div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-top">
+                <span class="stat-label">Total Bookings</span>
+                <span class="stat-icon icon-green">📅</span>
+            </div>
+            <div class="stat-value">
+                <?= number_format($total_bookings) ?>
+            </div>
+            <div class="stat-foot">All booking requests</div>
         </div>
 
     </div>
 
+    <div class="summary-grid">
 
-    <!-- Booking Summary -->
-
-    <div class="dashboard-card">
-
-        <div class="dashboard-card-header">
-
-            <h2>
-                Booking Summary
-            </h2>
-
+        <div class="summary-card">
+            <div>
+                <div class="summary-label">Confirmed Bookings</div>
+                <div class="summary-value">
+                    <?= number_format($confirmed_bookings) ?>
+                </div>
+            </div>
+            <span class="summary-icon">✅</span>
         </div>
 
+        <div class="summary-card">
+            <div>
+                <div class="summary-label">Pending Bookings</div>
+                <div class="summary-value">
+                    <?= number_format($pending_bookings) ?>
+                </div>
+            </div>
+            <span class="summary-icon">⏳</span>
+        </div>
 
-        <div class="summary-content">
+        <div class="summary-card">
+            <div>
+                <div class="summary-label">Cancelled Bookings</div>
+                <div class="summary-value">
+                    <?= number_format($cancelled_bookings) ?>
+                </div>
+            </div>
+            <span class="summary-icon">❌</span>
+        </div>
 
+    </div>
 
-            <div class="summary-item">
+    <div class="dashboard-content">
 
-                <div class="summary-left">
+        <section class="panel">
+            <div class="panel-header">
+                <div>
+                    <h2>Recent Bookings</h2>
+                    <p>The latest booking activity</p>
+                </div>
 
-                    <span class="summary-dot"></span>
+                <a class="view-all" href="bookings/index.php">
+                    View all →
+                </a>
+            </div>
 
-                    <span class="summary-label">
+            <?php if ($recent_bookings && $recent_bookings->num_rows > 0): ?>
+                <div class="table-scroll">
+                    <table class="booking-table">
+                        <thead>
+                            <tr>
+                                <th>Booking</th>
+                                <th>Customer</th>
+                                <th>Package</th>
+                                <th>Travel Date</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php while ($booking = $recent_bookings->fetch_assoc()): ?>
+                                <?php
+                                $status = strtolower(trim($booking["status"] ?? "pending"));
+                                $status_class = in_array(
+                                    $status,
+                                    ["confirmed", "pending", "cancelled"],
+                                    true
+                                ) ? "status-" . $status : "status-other";
+
+                                $travel_date = $booking["travel_date"] ?? "";
+                                ?>
+                                <tr>
+                                    <td class="booking-number">
+                                        #<?= (int) $booking["id"] ?>
+                                    </td>
+
+                                    <td class="customer-name">
+                                        <?= htmlspecialchars($booking["customer_name"] ?? "Customer") ?>
+                                    </td>
+
+                                    <td>
+                                        <?= htmlspecialchars($booking["package_name"] ?? "Tour package unavailable") ?>
+                                    </td>
+
+                                    <td>
+                                        <?php
+                                        if (!empty($travel_date) && strtotime($travel_date)) {
+                                            echo htmlspecialchars(date("d M Y", strtotime($travel_date)));
+                                        } else {
+                                            echo "—";
+                                        }
+                                        ?>
+                                    </td>
+
+                                    <td>
+                                        <span class="status-badge <?= htmlspecialchars($status_class) ?>">
+                                            <?= htmlspecialchars(ucfirst($status)) ?>
+                                        </span>
+                                    </td>
+                                </tr>
+                            <?php endwhile; ?>
+                        </tbody>
+                    </table>
+                </div>
+            <?php else: ?>
+                <div class="empty-state">
+                    No bookings have been recorded yet.
+                </div>
+            <?php endif; ?>
+        </section>
+
+        <section class="panel">
+            <div class="panel-header">
+                <div>
+                    <h2>Booking Summary</h2>
+                    <p>Current booking status overview</p>
+                </div>
+            </div>
+
+            <div class="summary-list">
+
+                <div class="summary-row">
+                    <div class="summary-name">
+                        <span class="summary-dot dot-green"></span>
                         Confirmed
+                    </div>
+                    <span class="summary-count">
+                        <?= number_format($confirmed_bookings) ?>
                     </span>
-
                 </div>
 
-                <span class="summary-number">
-
-                    <?php
-                    echo number_format(
-                        $status_counts['confirmed']
-                    );
-                    ?>
-
-                </span>
-
-            </div>
-
-
-            <div class="summary-item">
-
-                <div class="summary-left">
-
-                    <span class="summary-dot"></span>
-
-                    <span class="summary-label">
+                <div class="summary-row">
+                    <div class="summary-name">
+                        <span class="summary-dot dot-orange"></span>
                         Pending
+                    </div>
+                    <span class="summary-count">
+                        <?= number_format($pending_bookings) ?>
                     </span>
-
                 </div>
 
-                <span class="summary-number">
-
-                    <?php
-                    echo number_format(
-                        $status_counts['pending']
-                    );
-                    ?>
-
-                </span>
-
-            </div>
-
-
-            <div class="summary-item">
-
-                <div class="summary-left">
-
-                    <span class="summary-dot"></span>
-
-                    <span class="summary-label">
+                <div class="summary-row">
+                    <div class="summary-name">
+                        <span class="summary-dot dot-red"></span>
                         Cancelled
+                    </div>
+                    <span class="summary-count">
+                        <?= number_format($cancelled_bookings) ?>
                     </span>
-
                 </div>
 
-                <span class="summary-number">
-
-                    <?php
-                    echo number_format(
-                        $status_counts['cancelled']
-                    );
-                    ?>
-
-                </span>
-
-            </div>
-
-
-            <div class="summary-item">
-
-                <div class="summary-left">
-
-                    <span class="summary-dot"></span>
-
-                    <span class="summary-label">
+                <div class="summary-row">
+                    <div class="summary-name">
+                        <span class="summary-dot dot-blue"></span>
                         Total Bookings
+                    </div>
+                    <span class="summary-count">
+                        <?= number_format($total_bookings) ?>
                     </span>
-
                 </div>
-
-                <span class="summary-number">
-
-                    <?php
-                    echo number_format(
-                        $total_bookings
-                    );
-                    ?>
-
-                </span>
 
             </div>
 
-
-        </div>
+            <div class="revenue-panel">
+                <span>Total Revenue from Paid Payments</span>
+                <strong>₹<?= number_format($total_revenue, 2) ?></strong>
+            </div>
+        </section>
 
     </div>
 
 </div>
 
-
-<?php
-
-require_once "../includes/admin_footer.php";
-
-?>
+<?php require_once "../includes/admin_footer.php"; ?>
